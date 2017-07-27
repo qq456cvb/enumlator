@@ -160,6 +160,8 @@ class CardGroup:
         for c in candidates:
             if len(c.cards) == len(cards):
                 return c
+        print("cards error!")
+        print(cards)
         raise Exception("Invalid Cards!")
 
     @staticmethod
@@ -209,7 +211,7 @@ class CardGroup:
             if counts[c] == 4:
                 quadrics.append(c)
                 candidates.append(CardGroup([c] * 4, 'bomb', Card.to_value(c)))
-                cards = filter(lambda a: a != c, cards)
+                cards = list(filter(lambda a: a != c, cards))
 
         counts = Counter(cards)
         singles = [c for c in counts if counts[c] == 1]
@@ -326,7 +328,7 @@ class CardGroup:
         # 3 * n + n, 3 * n + 2 * n
         triple_seq = [c.cards for c in candidates if c.type == 'triple_seq']
         for cand in triple_seq:
-            cnt = len(cand) / 3
+            cnt = int(len(cand) / 3)
             for extra in list(itertools.combinations(singles, cnt)):
                 candidates.append(
                     CardGroup(cand + list(extra), 'triple_seq+singles',
@@ -348,7 +350,10 @@ class CardGroup:
 
 if __name__ == '__main__':
     pass
+    # CardGroup.to_cardgroup(['6', '6', 'Q', 'Q', 'Q'])
     actions = get_action_space()
+    for i in range(1, len(actions)):
+        CardGroup.to_cardgroup(actions[i])
     # print(CardGroup.folks(['3', '4', '3', '4', '3', '4', '*', '$']))
     # CardGroup.to_cardgroup(['3', '4', '3', '4', '3', '4', '*', '$'])
     # print actions[561]

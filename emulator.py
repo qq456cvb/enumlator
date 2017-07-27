@@ -12,6 +12,9 @@ from collections import Counter
 import time
 import random
 
+LORD_REWARD = 1
+FARMER_REWARD = 1
+
 
 def counter_subset(list1, list2):
     c1, c2 = Counter(list1), Counter(list2)
@@ -36,11 +39,17 @@ class Emulator:
         self.cards = []
         self.click_pos = []
         self.extra_cards = []
+        self.history = np.zeros([3, 54])
         self.templates = [None] * len(Card.cards)
         self.templates_mini = [None] * len(Card.cards)
         self.templates_tiny = [None] * len(Card.cards)
         self.train()
+        self.id = -1
         self.get_window('BlueStacks App Player for Windows (beta-1)')
+
+    def get_id(self):
+        # 2 lord, 1 before lord, 3 follow lord
+        return self.id
 
     def train(self):
         for idx, card in enumerate(Card.cards):
@@ -81,31 +90,64 @@ class Emulator:
             mask[0] = False
         return mask
 
+    def get_state(self):
+        return np.hstack((self.history[0, :],
+                          self.history[1, :],
+                          self.history[2, :],
+                          Card.to_onehot(self.extra_cards),
+                          Card.to_onehot(self.cards)))
+
     def step(self, i):
         intention = Emulator.action_space[i]
         print('intention:', end=' ')
         print(intention)
-        pos = []
-        cards = np.ma.array(self.cards, mask=np.zeros(len(self.cards)))
-        for card in intention:
-            idx = np.where(cards == card)[0][0]
-            cards.mask[idx] = 1
-            pos.append(self.click_pos[idx])
-        for p in pos:
-            click(p[0], p[1])
-
         if not intention:
             click(self.x + 600, self.y + 900)
         else:
-            time.sleep(1)
+            self.history[2, :] += Card.to_onehot(intention)
+            pos = []
+            cards = np.ma.array(self.cards, mask=np.zeros(len(self.cards)))
+            for card in intention:
+                idx = np.where(cards == card)[0][0]
+                cards.mask[idx] = 1
+                pos.append(self.click_pos[idx])
+            for p in pos:
+                click(p[0], p[1])
+
+            time.sleep(0.5)
+            up_cards = self.parse_up_cards(self.get_window_img())
+            if len(up_cards) != len(intention):
+                redundant = list((Counter(up_cards) - Counter(intention)).elements())
+                pos = []
+                for card in redundant:
+                    idx = np.where(cards == card)[0][0]
+                    cards.mask[idx] = 1
+                    pos.append(self.click_pos[idx])
+                for p in pos:
+                    click(p[0], p[1])
+            time.sleep(0.8)
             click(self.x + 1400, self.y + 900)
 
-        time.sleep(3)
+        time.sleep(1)
         next_cards = self.parse_next_cards(self.get_window_img())
+        self.history[0, :] += Card.to_onehot(next_cards)
         self.last_cards = self.parse_before_cards(self.get_window_img())
+        self.history[1, :] += Card.to_onehot(next_cards)
         if not self.last_cards:
             self.last_cards = next_cards
-        # print(self.last_cards)
+        print(self.last_cards)
+        if not self.parse_self_cards(self.get_window_img()):
+            if np.array_equal(self.get_window_img()[400, 1040, :], np.array([202, 202, 202])):
+                if self.id == 2:
+                    return -LORD_REWARD, True
+                else:
+                    return -FARMER_REWARD, True
+            else:
+                if self.id == 2:
+                    return LORD_REWARD, True
+                else:
+                    return FARMER_REWARD, True
+        return 0, False
 
     def begin(self):
         # begin the game
@@ -115,11 +157,19 @@ class Emulator:
         # click the summary window
         click(self.x + 1800, self.y + 200)
 
-        time.sleep(1)
+        time.sleep(0.8)
         # 三连败界面，傻逼作者
         if np.array_equal(self.get_window_img()[500, 1700, :], np.array([254, 231, 195])):
             click(self.x + 1800, self.y + 300)
             time.sleep(0.5)
+
+    def parse_lord(self):
+        if np.array_equal(self.get_window_img()[820, 80, :], np.array([173, 173, 249])):
+            self.id = 2
+        elif np.array_equal(self.get_window_img()[290, 80, :], np.array([60, 60, 242])):
+            self.id = 3
+        else:
+            self.id = 1
 
     def prepare(self):
         # wait for shuffle
@@ -140,9 +190,12 @@ class Emulator:
             if not self.extra_cards:
                 return self.prepare()
 
-        time.sleep(5)
+        time.sleep(3.5)
+        self.parse_lord()
         next_cards = self.parse_next_cards(self.get_window_img())
+        self.history[0, :] += Card.to_onehot(next_cards)
         self.last_cards = self.parse_before_cards(self.get_window_img())
+        self.history[1, :] += Card.to_onehot(next_cards)
         if not self.last_cards:
             self.last_cards = next_cards
         print(self.last_cards)
@@ -176,15 +229,15 @@ class Emulator:
                     if Card.cards[max_j] in ['*', '$']:
                         if np.sum(sub_img_bgr[:, :, 2]) < np.sum(sub_img_bgr[:, :, 0]) + 1e4:
                             cards.append('*')
-                            print('*', end=' ')
+                            # print('*', end=' ')
                         else:
                             cards.append('$')
-                            print('$', end=' ')
+                            # print('$', end=' ')
                     else:
                         cards.append(Card.cards[max_j])
-                        print(Card.cards[max_j], end=' ')
+                        # print(Card.cards[max_j], end=' ')
                     # print(max_response)
-                    sys.stdout.flush()
+                    # sys.stdout.flush()
                     x = rect[0] + rect[2] + 1
         return cards
 
@@ -217,16 +270,47 @@ class Emulator:
                     if Card.cards[max_j] in ['*', '$']:
                         if np.sum(sub_img_bgr[:, :, 2]) < np.sum(sub_img_bgr[:, :, 0]) + 1e4:
                             cards.append('*')
-                            print('*', end=' ')
+                            # print('*', end=' ')
                         else:
                             cards.append('$')
-                            print('$', end=' ')
+                            # print('$', end=' ')
                     else:
                         cards.append(Card.cards[max_j])
-                        print(Card.cards[max_j], end=' ')
+                        # print(Card.cards[max_j], end=' ')
                     # print(max_response)
-                    sys.stdout.flush()
+                    # sys.stdout.flush()
                     x = rect[0] + rect[2] + 1
+        return cards
+
+    def parse_up_cards(self, img):
+        cards = []
+        method = eval('cv2.TM_CCOEFF_NORMED')
+        x = 10
+        while x < 1935:
+            x += 1
+            if np.array_equal(img[989, x, :], np.array([255, 255, 255])):
+                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 989), (255, 0, 0), (0, 0, 0), (0, 0, 0))
+                sub_img_bgr = img[rect[1]:rect[1] + 75, rect[0]:rect[0] + rect[2]]
+                sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
+                max_response = 0.
+                max_j = -1
+                for (j, temp) in enumerate(self.templates):
+                    if temp is not None:
+                        if sub_img.shape[1] < temp.shape[1]:
+                            continue
+                        res = cv2.matchTemplate(sub_img, temp, method)
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                        if max_val > max_response:
+                            max_response = max_val
+                            max_j = j
+                if Card.cards[max_j] in ['*', '$']:
+                    if np.sum(sub_img_bgr[:, :, 2]) < np.sum(sub_img_bgr[:, :, 0]) + 1e4:
+                        cards.append('*')
+                    else:
+                        cards.append('$')
+                else:
+                    cards.append(Card.cards[max_j])
+                x = rect[0] + rect[2]
         return cards
 
     def parse_self_cards(self, img):
@@ -263,18 +347,18 @@ class Emulator:
                 if Card.cards[max_j] in ['*', '$']:
                     if np.sum(sub_img_bgr[:, :, 2]) < np.sum(sub_img_bgr[:, :, 0]) + 1e4:
                         cards.append('*')
-                        print('*', end=' ')
+                        # print('*', end=' ')
                     else:
                         cards.append('$')
-                        print('$', end=' ')
+                        # print('$', end=' ')
                 else:
                     cards.append(Card.cards[max_j])
-                    print(Card.cards[max_j], end=' ')
+                    # print(Card.cards[max_j], end=' ')
                 # print(max_response)
-                sys.stdout.flush()
+                # sys.stdout.flush()
                 self.click_pos.append((self.x + rect[0] + int(rect[2] / 2), self.y + rect[1] + int(rect[3] / 2)))
                 x = rect[0] + rect[2]
-        print("")
+        # print("")
         return cards
 
     def parse_extra_cards(self, img):
@@ -310,17 +394,17 @@ class Emulator:
                 if Card.cards[max_j] in ['*', '$']:
                     if np.sum(sub_img_bgr[:, :, 2]) < np.sum(sub_img_bgr[:, :, 0]) + 1e4:
                         cards.append('*')
-                        print('*', end=' ')
+                        # print('*', end=' ')
                     else:
                         cards.append('$')
-                        print('$', end=' ')
+                        # print('$', end=' ')
                 else:
                     cards.append(Card.cards[max_j])
-                    print(Card.cards[max_j], end=' ')
+                    # print(Card.cards[max_j], end=' ')
                 # print(max_response)
-                sys.stdout.flush()
+                # sys.stdout.flush()
                 x = rect[0] + rect[2]
-        print("")
+        # print("")
         return cards
 
     def get_window(self, name):
@@ -342,54 +426,33 @@ class Emulator:
 
 
 if __name__ == '__main__':
-    # emulator = Emulator()
-    # i = 1
-    # while cv2.imread('test%d.bmp' % i) is not None:
-    #     i += 1
-    # cv2.imwrite('test27.bmp', emulator.get_window_img())
-    # img = emulator.get_window_img()
-    # print(img[500, 1700, :])
-    # assert np.array_equal(img[500, 1700, :], np.array([254, 231, 195]))
-    # img = cv2.imread('test26.bmp')
-    # h, w, _ = img.shape
-    # for i in range(13):
-    #     cv2.rectangle(img, (int(w / 13 * i), 0), (int(w / 13 * (i+1)), 50), (255, 0, 0))
-    # cv2.rectangle(img, (1080, 560), (2100, 760), (255, 0, 0))
-    # cv2.imshow('test', img)
-    # cv2.waitKey(0)
 
     emulator = Emulator()
-    for i in range(5):
+    # cv2.imwrite('test30.bmp', emulator.get_window_img())
+    # print(emulator.parse_up_cards(emulator.get_window_img()))
+    for i in range(2):
         emulator.begin()
         emulator.prepare()
+        print(emulator.id)
         while True:
             mask = emulator.get_mask()
-            if np.sum(mask) == 0:
-                break
             valid_actions = np.take(np.arange(len(Emulator.action_space)), mask.nonzero())
             valid_actions = valid_actions.reshape(-1)
             # valid_p = np.take(policy[0], mask.nonzero())
             # valid_p = valid_p / np.sum(valid_p)
             # valid_p = valid_p.reshape(-1)
             a = np.random.choice(valid_actions)
-            emulator.step(a)
+            r, done = emulator.step(a)
+            # s = emulator.get_state()
+            # print(s.shape)
+            # print(r)
+            if done:
+                break
         emulator.end()
-    # cv2.imwrite('test17.bmp', emulator.get_window_img())
+
     # print(emulator.parse_extra_cards(img))
     # print(emulator.parse_next_cards(img))
     # emulator.parse_self_cards(emulator.get_window_img())
     # for p in emulator.click_pos:
     #     click(p[0], p[1])
     # cv2.waitKey(0)
-    # while(True):
-    #     frame = emulator.get_window_img()
-    #
-    #     # emulator.parse_cards(frame)
-    #
-    #     # height, width = frame.shape[:2]
-    #     # cv2.imwrite('./test3.bmp', frame)
-    #     # frame = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
-    #     cv2.imshow("test", frame)
-    #     cv2.waitKey(0)
-    #     break
-    # cv2.destroyAllWindows()
