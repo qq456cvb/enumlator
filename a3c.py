@@ -91,7 +91,6 @@ class CardMaster:
         self.gamma = 0.99
         self.train_intervals = 1
         self.trainer = tf.train.AdamOptimizer()
-        self.episodes = 0
         self.episode_rewards = [[]] * 3
         self.episode_length = [[]] * 3
         self.episode_mean_values = [[]] * 3
@@ -99,14 +98,18 @@ class CardMaster:
 
         self.agents = [CardAgent('agent%d' % i, self.trainer) for i in range(3)]
 
+        self.global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
+        self.increment = self.global_episodes.assign_add(1)
+
     def train_batch(self, buffer, sess, gamma, val_last, idx):
         buffer = np.array(buffer)
         self.agents[idx].train_batch(buffer, sess, gamma, val_last)
 
     def run(self, sess, saver, max_episode_length):
         with sess.as_default():
-            for i in range(1001):
-                print("episode %d" % i)
+            global_episodes = sess.run(self.global_episodes)
+            while global_episodes < 1001:
+                print("episode %d" % global_episodes)
                 episode_buffer = []
                 episode_values = []
                 episode_reward = 0
@@ -158,9 +161,14 @@ class CardMaster:
                 self.episode_length[train_id].append(episode_steps)
                 self.episode_rewards[train_id].append(episode_reward)
 
-                if i % 5 == 0 and i > 0:
-                    if i % 50 == 0:
-                        saver.save(sess, './model' + '/model-' + str(i) + '.cptk')
+                episodes = sess.run(self.agents[train_id].episodes)
+                sess.run(self.agents[train_id].increment)
+
+                global_episodes += 1
+                sess.run(self.increment)
+                if episodes % 5 == 0 and episodes > 0:
+                    if global_episodes % 50 == 0:
+                        saver.save(sess, './model' + '/model-' + str(global_episodes) + '.cptk')
                         print("Saved Model")
                     mean_reward = np.mean(self.episode_rewards[train_id][-5:])
                     mean_length = np.mean(self.episode_length[train_id][-5:])
@@ -171,10 +179,8 @@ class CardMaster:
                     summary.value.add(tag='length', simple_value=float(mean_length))
                     summary.value.add(tag='values', simple_value=float(mean_value))
 
-                    episodes = sess.run(self.agents[train_id].episodes)
                     self.summary_writers[train_id].add_summary(summary, episodes)
                     self.summary_writers[train_id].flush()
-                    sess.run(self.agents[train_id].increment)
 
                 self.env.end()
 
@@ -227,13 +233,13 @@ if __name__ == '__main__':
     with tf.device("/cpu:0"):
         master = CardMaster(cardgame)
     saver = tf.train.Saver(max_to_keep=20)
-    with tf.Session() as sess:
+    with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)) as sess:
         if load_model:
             print('Loading Model...')
             ckpt = tf.train.get_checkpoint_state(model_path)
             saver.restore(sess, ckpt.model_checkpoint_path)
-            run_game(sess, master)
+            # run_game(sess, master)
         else:
             sess.run(tf.global_variables_initializer())
             master.run(sess, saver, 2000)
-        sess.close()
+        # sess.close()

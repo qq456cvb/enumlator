@@ -128,7 +128,7 @@ class Emulator:
             time.sleep(0.8)
             click(self.x + 1400, self.y + 900)
 
-        time.sleep(1)
+        time.sleep(1.5)
         next_cards = self.parse_next_cards(self.get_window_img())
         self.history[0, :] += Card.to_onehot(next_cards)
         self.last_cards = self.parse_before_cards(self.get_window_img())
@@ -155,9 +155,10 @@ class Emulator:
 
     def end(self):
         # click the summary window
+        time.sleep(1.5)
         click(self.x + 1800, self.y + 200)
 
-        time.sleep(0.8)
+        time.sleep(1)
         # 三连败界面，傻逼作者
         if np.array_equal(self.get_window_img()[500, 1700, :], np.array([254, 231, 195])):
             click(self.x + 1800, self.y + 300)
