@@ -1,8 +1,9 @@
 from emulator import Emulator
-import os
+import os, random
 import tensorflow as tf
 import numpy as np
 import tensorflow.contrib.slim as slim
+import tensorflow.contrib.rnn as rnn
 
 
 def update_params(scope_from, scope_to):
@@ -26,14 +27,31 @@ def discounted_return(r, gamma):
 
 
 class CardNetwork:
-    def __init__(self, s_dim, trainer, scope, a_dim=8309):
+    def __init__(self, s_dim, trainer, scope, a_dim=8310):
         with tf.variable_scope(scope):
             self.input = tf.placeholder(tf.float32, [None, s_dim], name="input")
-            self.fc1 = slim.fully_connected(inputs=self.input, num_outputs=128, activation_fn=None)
-            self.fc2 = slim.fully_connected(inputs=self.fc1, num_outputs=64, activation_fn=None)
+            self.fc1 = slim.fully_connected(inputs=self.input, num_outputs=256)
+            self.fc2 = slim.fully_connected(inputs=self.fc1, num_outputs=128)
 
-            self.policy_pred = slim.fully_connected(inputs=self.fc2, num_outputs=a_dim, activation_fn=tf.nn.softmax)
-            self.val_output = slim.fully_connected(inputs=self.fc2, num_outputs=1, activation_fn=None)
+            self.lstm = rnn.BasicLSTMCell(num_units=256, state_is_tuple=True)
+
+            # batch size 1 for every step
+            c_input = tf.placeholder(tf.float32, [1, self.lstm.state_size.c])
+            h_input = tf.placeholder(tf.float32, [1, self.lstm.state_size.h])
+
+            step_cnt = tf.shape(self.input)[:1]
+            self.rnn_hidden_in = rnn.LSTMStateTuple(c_input, h_input)
+            rnn_in = tf.expand_dims(self.fc2, 0)
+            rnn_out, self.rnn_hidden_out = tf.nn.dynamic_rnn(self.lstm, rnn_in,
+                                                             initial_state=self.rnn_hidden_in,
+                                                             sequence_length=step_cnt)
+            # lstm_c_output, lstm_h_output = lstm_state_output
+            self.rnn_out = tf.reshape(rnn_out, [-1, 256])
+
+            self.fc3 = slim.fully_connected(inputs=self.rnn_out, num_outputs=1024)
+            self.policy_pred = slim.fully_connected(inputs=self.fc3, num_outputs=a_dim, activation_fn=tf.nn.softmax)
+            self.val_output = slim.fully_connected(inputs=self.rnn_out, num_outputs=1, activation_fn=None)
+
             self.val_pred = tf.reshape(self.val_output, [-1])
 
             self.action = tf.placeholder(tf.int32, [None], "action_input")
@@ -62,9 +80,9 @@ class CardAgent:
         self.name = name
         self.episodes = tf.Variable(0, dtype=tf.int32, name='episodes_' + name, trainable=False)
         self.increment = self.episodes.assign_add(1)
-        self.network = CardNetwork(54 * 5, trainer, self.name, 8309)
+        self.network = CardNetwork(54 * 5, trainer, self.name, 8310)
 
-    def train_batch(self, buffer, sess, gamma, val_last):
+    def train_batch(self, rnn_backup, buffer, sess, gamma, val_last):
         states = buffer[:, 0]
         actions = buffer[:, 1]
         rewards = buffer[:, 2]
@@ -80,6 +98,8 @@ class CardAgent:
         sess.run(self.network.apply_grads, feed_dict={self.network.val_truth: val_truth,
                                                       self.network.advantages: advantages,
                                                       self.network.input: np.vstack(states),
+                                                      self.network.rnn_hidden_in[0]: rnn_backup[0],
+                                                      self.network.rnn_hidden_in[1]: rnn_backup[1],
                                                       self.network.action: actions})
 
 
@@ -87,7 +107,7 @@ class CardMaster:
     def __init__(self, env):
         self.name = 'global'
         self.env = env
-        self.a_dim = 8309
+        self.a_dim = 8310
         self.gamma = 0.99
         self.train_intervals = 1
         self.trainer = tf.train.AdamOptimizer()
@@ -101,9 +121,9 @@ class CardMaster:
         self.global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
         self.increment = self.global_episodes.assign_add(1)
 
-    def train_batch(self, buffer, sess, gamma, val_last, idx):
+    def train_batch(self, rnn_backup, buffer, sess, gamma, val_last, idx):
         buffer = np.array(buffer)
-        self.agents[idx].train_batch(buffer, sess, gamma, val_last)
+        self.agents[idx].train_batch(rnn_backup, buffer, sess, gamma, val_last)
 
     def run(self, sess, saver, max_episode_length):
         with sess.as_default():
@@ -123,11 +143,26 @@ class CardMaster:
                 s = self.env.get_state()
                 s = np.reshape(s, [1, -1])
 
+                # init LSTM state
+                c_init = np.zeros((1, self.agents[train_id].network.lstm.state_size.c), np.float32)
+                h_init = np.zeros((1, self.agents[train_id].network.lstm.state_size.h), np.float32)
+                rnn_state = [c_init, h_init]
+                rnn_state_backup = rnn_state
+
                 for l in range(max_episode_length):
                     print("turn %d" % l)
-                    policy, val = sess.run([self.agents[train_id].network.policy_pred, self.agents[train_id].network.val_pred],
-                                           feed_dict={self.agents[train_id].network.input: s})
+                    policy, val, rnn_state = sess.run([self.agents[train_id].network.policy_pred,
+                                                       self.agents[train_id].network.val_pred,
+                                                      self.agents[train_id].network.rnn_hidden_out],
+                                                      feed_dict={self.agents[train_id].network.input: s,
+                                                                 self.agents[train_id].network.rnn_hidden_in[0]: rnn_state[0],
+                                                                 self.agents[train_id].network.rnn_hidden_in[1]: rnn_state[1]
+                                                                 })
                     mask = self.env.get_mask()
+                    oppo_cnt = self.env.get_opponent_min_cnt()
+                    # encourage response when opponent is about to win
+                    if random.random() > oppo_cnt / 20. and np.count_nonzero(mask) > 1:
+                        mask[0] = False
                     valid_actions = np.take(np.arange(self.a_dim), mask.nonzero())
                     valid_actions = valid_actions.reshape(-1)
                     valid_p = np.take(policy[0], mask.nonzero())
@@ -145,17 +180,23 @@ class CardMaster:
                     episode_steps += 1
 
                     if done:
+                        print(np.sum(self.env.history))
                         if len(episode_buffer) != 0:
-                            self.train_batch(episode_buffer, sess, self.gamma, 0, train_id)
+                            self.train_batch(rnn_state_backup, episode_buffer, sess, self.gamma, 0, train_id)
                         break
 
                     s = s_prime
 
                     if len(episode_buffer) == self.train_intervals:
                         val_last = sess.run(self.agents[train_id].network.val_pred,
-                                            feed_dict={self.agents[train_id].network.input: s})
-                        self.train_batch(episode_buffer, sess, self.gamma, val_last[0], train_id)
+                                            feed_dict={self.agents[train_id].network.input: s,
+                                                       self.agents[train_id].network.rnn_hidden_in[0]: rnn_state[0],
+                                                       self.agents[train_id].network.rnn_hidden_in[1]: rnn_state[1]
+                                                       })
+                        self.train_batch(rnn_state_backup, episode_buffer, sess, self.gamma, val_last[0], train_id)
                         episode_buffer = []
+
+                        rnn_state_backup = rnn_state
 
                 self.episode_mean_values[train_id].append(np.mean(episode_values))
                 self.episode_length[train_id].append(episode_steps)
@@ -166,10 +207,11 @@ class CardMaster:
 
                 global_episodes += 1
                 sess.run(self.increment)
+                if global_episodes % 50 == 0:
+                    saver.save(sess, './model' + '/model-' + str(global_episodes) + '.cptk')
+                    print("Saved Model")
+
                 if episodes % 5 == 0 and episodes > 0:
-                    if global_episodes % 50 == 0:
-                        saver.save(sess, './model' + '/model-' + str(global_episodes) + '.cptk')
-                        print("Saved Model")
                     mean_reward = np.mean(self.episode_rewards[train_id][-5:])
                     mean_length = np.mean(self.episode_length[train_id][-5:])
                     mean_value = np.mean(self.episode_mean_values[train_id][-5:])
@@ -230,7 +272,7 @@ if __name__ == '__main__':
     load_model = False
     model_path = './model'
     cardgame = Emulator()
-    with tf.device("/cpu:0"):
+    with tf.device("/gpu:0"):
         master = CardMaster(cardgame)
     saver = tf.train.Saver(max_to_keep=20)
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)) as sess:
@@ -238,6 +280,7 @@ if __name__ == '__main__':
             print('Loading Model...')
             ckpt = tf.train.get_checkpoint_state(model_path)
             saver.restore(sess, ckpt.model_checkpoint_path)
+            master.run(sess, saver, 2000)
             # run_game(sess, master)
         else:
             sess.run(tf.global_variables_initializer())

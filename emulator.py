@@ -37,6 +37,7 @@ class Emulator:
     def __init__(self):
         self.last_cards = []
         self.cards = []
+        self.cards_other = [[]] * 2
         self.click_pos = []
         self.extra_cards = []
         self.history = np.zeros([3, 54])
@@ -73,6 +74,31 @@ class Emulator:
             if self.templates_tiny[idx] is not None:
                 self.templates_tiny[idx] = cv2.cvtColor(self.templates_tiny[idx], cv2.COLOR_BGR2GRAY)
 
+    # spin lock, pos: x, y
+    def spin(self, pos, color, interval=0.1, max_wait=0.):
+        wait = 0.
+        while not np.array_equal(self.get_window_img()[pos[1], pos[0], :], np.array(color)):
+            time.sleep(interval)
+            wait += interval
+            if max_wait != 0. and wait >= max_wait:
+                return False
+        return True
+
+    def spin_multiple(self, pos, color, interval=0.1):
+        while True:
+            for i in range(len(pos)):
+                if np.array_equal(self.get_window_img()[pos[i][1], pos[i][0], :], np.array(color[i])):
+                    return i
+            time.sleep(interval)
+
+    def get_opponent_min_cnt(self):
+        if self.id == 2:
+            return min(len(self.cards_other[0]), len(self.cards_other[1]))
+        if self.id == 1:
+            return len(self.cards_other[0])
+        if self.id == 3:
+            return len(self.cards_other[1])
+
     def get_mask(self):
         self.cards = self.parse_self_cards(self.get_window_img())
         # 1 valid; 0 invalid
@@ -99,8 +125,8 @@ class Emulator:
 
     def step(self, i):
         intention = Emulator.action_space[i]
-        print('intention:', end=' ')
-        print(intention)
+        # print('intention:', end=' ')
+        # print(intention)
         if not intention:
             click(self.x + 600, self.y + 900)
         else:
@@ -125,18 +151,13 @@ class Emulator:
                     pos.append(self.click_pos[idx])
                 for p in pos:
                     click(p[0], p[1])
-            time.sleep(0.8)
+            self.spin((1400, 900), [0, 170, 239])
             click(self.x + 1400, self.y + 900)
 
-        time.sleep(1.5)
-        next_cards = self.parse_next_cards(self.get_window_img())
-        self.history[0, :] += Card.to_onehot(next_cards)
-        self.last_cards = self.parse_before_cards(self.get_window_img())
-        self.history[1, :] += Card.to_onehot(next_cards)
-        if not self.last_cards:
-            self.last_cards = next_cards
-        print(self.last_cards)
-        if not self.parse_self_cards(self.get_window_img()):
+        # self.spin((1400, 900), [241, 235, 223], 0.03)
+        time.sleep(0.3)
+        idx = self.spin_multiple([(1400, 900), (1800, 200)], [[88, 88, 88], [170, 170, 255]])
+        if idx == 1:
             if np.array_equal(self.get_window_img()[400, 1040, :], np.array([202, 202, 202])):
                 if self.id == 2:
                     return -LORD_REWARD, True
@@ -147,56 +168,92 @@ class Emulator:
                     return LORD_REWARD, True
                 else:
                     return FARMER_REWARD, True
+        next_cards = self.parse_next_cards(self.get_window_img())
+        self.history[0, :] += Card.to_onehot(next_cards)
+        for i in range(len(next_cards)):
+            self.cards_other[0].remove('u')
+        self.last_cards = self.parse_before_cards(self.get_window_img())
+        self.history[1, :] += Card.to_onehot(self.last_cards)
+        for i in range(len(self.last_cards)):
+            self.cards_other[1].remove('u')
+        if not self.last_cards:
+            self.last_cards = next_cards
+        print(self.last_cards)
         return 0, False
 
+    def reset(self):
+        self.last_cards = []
+        self.cards = []
+        self.cards_other = [[], []]
+        self.click_pos = []
+        self.extra_cards = []
+        self.history = np.zeros([3, 54])
+        self.id = -1
+
     def begin(self):
+        self.reset()
+        self.spin((1000, 900), [240, 245, 199])
         # begin the game
         click(self.x + 1000, self.y + 900)
 
     def end(self):
         # click the summary window
-        time.sleep(1.5)
+        self.spin((1800, 200), [170, 170, 255])
         click(self.x + 1800, self.y + 200)
 
-        time.sleep(1)
+        self.spin_multiple([(1800, 300), (1400, 500)], [[170, 170, 255], [240, 211, 150]])
         # 三连败界面，傻逼作者
         if np.array_equal(self.get_window_img()[500, 1700, :], np.array([254, 231, 195])):
             click(self.x + 1800, self.y + 300)
-            time.sleep(0.5)
 
     def parse_lord(self):
+        self.cards_other[0] = ['u'] * 17
+        self.cards_other[1] = self.cards_other[0].copy()
         if np.array_equal(self.get_window_img()[820, 80, :], np.array([173, 173, 249])):
             self.id = 2
         elif np.array_equal(self.get_window_img()[290, 80, :], np.array([60, 60, 242])):
             self.id = 3
         else:
             self.id = 1
+        if self.id == 1:
+            self.cards_other[0] += ['u'] * 3
+        if self.id == 3:
+            self.cards_other[1] += ['u'] * 3
 
     def prepare(self):
         # wait for shuffle
-        time.sleep(5.5)
+        call = self.spin_multiple([(1150, 900), (1000, 680)], [[4, 188, 255], [255, 255, 255]])
+        should_choose = (call == 0)
 
-        self.extra_cards = self.parse_extra_cards(self.get_window_img())
-        if not self.extra_cards:
+        if should_choose:
             # I should choose
             if random.randint(1, 2) == 1:
                 # do not call for lord
-                click(self.x + 800, self.y + 900)
+                while np.array_equal(self.get_window_img()[900, 800, :], np.array([142, 222, 249])):
+                    click(self.x + 800, self.y + 900)
             else:
                 # call for lord
                 click(self.x + 1200, self.y + 900)
-            time.sleep(0.25)
-            self.extra_cards = self.parse_extra_cards(self.get_window_img())
+            called = self.spin((1000, 680), [255, 255, 255], 0.1, 0.5)
             # no one calls for lord
-            if not self.extra_cards:
+            if not called:
+                print("no one calls")
                 return self.prepare()
+            else:
+                self.extra_cards = self.parse_extra_cards(self.get_window_img())
+        else:
+            self.extra_cards = self.parse_extra_cards(self.get_window_img())
 
-        time.sleep(3.5)
+        self.spin((1400, 900), [88, 88, 88])
         self.parse_lord()
         next_cards = self.parse_next_cards(self.get_window_img())
         self.history[0, :] += Card.to_onehot(next_cards)
+        for i in range(len(next_cards)):
+            self.cards_other[0].remove('u')
         self.last_cards = self.parse_before_cards(self.get_window_img())
-        self.history[1, :] += Card.to_onehot(next_cards)
+        self.history[1, :] += Card.to_onehot(self.last_cards)
+        for i in range(len(self.last_cards)):
+            self.cards_other[1].remove('u')
         if not self.last_cards:
             self.last_cards = next_cards
         print(self.last_cards)
@@ -429,7 +486,7 @@ class Emulator:
 if __name__ == '__main__':
 
     emulator = Emulator()
-    # cv2.imwrite('test30.bmp', emulator.get_window_img())
+    cv2.imwrite('test32.bmp', emulator.get_window_img())
     # print(emulator.parse_up_cards(emulator.get_window_img()))
     for i in range(2):
         emulator.begin()
