@@ -49,18 +49,26 @@ class CardNetwork:
             self.rnn_out = tf.reshape(rnn_out, [-1, 256])
 
             self.fc3 = slim.fully_connected(inputs=self.rnn_out, num_outputs=1024)
-            self.policy_pred = slim.fully_connected(inputs=self.fc3, num_outputs=a_dim, activation_fn=tf.nn.softmax)
-            self.val_output = slim.fully_connected(inputs=self.rnn_out, num_outputs=1, activation_fn=None)
+            self.policy_pred = slim.fully_connected(inputs=self.fc3, num_outputs=a_dim, activation_fn=None)
 
+            self.mask = tf.placeholder(tf.bool, [None, a_dim], name='mask')
+            self.mask = tf.reshape(self.mask, [1, -1])
+            self.valid_policy = tf.boolean_mask(self.policy_pred[0], self.mask[0])
+            self.valid_policy = tf.nn.softmax(self.valid_policy)
+            self.valid_policy = tf.reshape(self.valid_policy, [1, -1])
+
+            self.val_output = slim.fully_connected(inputs=self.rnn_out, num_outputs=1, activation_fn=None)
             self.val_pred = tf.reshape(self.val_output, [-1])
 
+            # only support batch size one since masked_a_dim is changing
             self.action = tf.placeholder(tf.int32, [None], "action_input")
-            self.action_one_hot = tf.one_hot(self.action, a_dim, dtype=tf.float32)
+            self.masked_a_dim = tf.placeholder(tf.int32, None)
+            self.action_one_hot = tf.one_hot(self.action, self.masked_a_dim, dtype=tf.float32)
 
             self.val_truth = tf.placeholder(tf.float32, [None], "val_input")
             self.advantages = tf.placeholder(tf.float32, [None], "advantage_input")
 
-            self.pi_sample = tf.reduce_sum(self.action_one_hot * self.policy_pred, [1])
+            self.pi_sample = tf.reduce_sum(self.action_one_hot * self.valid_policy, [1])
             self.policy_loss = -tf.reduce_sum(tf.log(tf.clip_by_value(self.pi_sample, 1e-10, 1.)) * self.advantages)
 
             self.val_loss = tf.reduce_sum(tf.square(self.val_pred-self.val_truth))
@@ -82,11 +90,12 @@ class CardAgent:
         self.increment = self.episodes.assign_add(1)
         self.network = CardNetwork(54 * 5, trainer, self.name, 8310)
 
-    def train_batch(self, rnn_backup, buffer, sess, gamma, val_last):
+    def train_batch(self, rnn_backup, buffer, masks, sess, gamma, val_last):
         states = buffer[:, 0]
         actions = buffer[:, 1]
         rewards = buffer[:, 2]
         values = buffer[:, 3]
+        a_dims = buffer[0, 4]
 
         rewards_plus = np.append(rewards, val_last)
         val_truth = discounted_return(rewards_plus, gamma)[:-1]
@@ -100,7 +109,9 @@ class CardAgent:
                                                       self.network.input: np.vstack(states),
                                                       self.network.rnn_hidden_in[0]: rnn_backup[0],
                                                       self.network.rnn_hidden_in[1]: rnn_backup[1],
-                                                      self.network.action: actions})
+                                                      self.network.action: actions,
+                                                      self.network.masked_a_dim: a_dims,
+                                                      self.network.mask: masks})
 
 
 class CardMaster:
@@ -109,7 +120,10 @@ class CardMaster:
         self.env = env
         self.a_dim = 8310
         self.gamma = 0.99
+
+        # DO NOT MODIFY THIS since masked action is needed
         self.train_intervals = 1
+
         self.trainer = tf.train.AdamOptimizer()
         self.episode_rewards = [[]] * 3
         self.episode_length = [[]] * 3
@@ -121,9 +135,10 @@ class CardMaster:
         self.global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
         self.increment = self.global_episodes.assign_add(1)
 
-    def train_batch(self, rnn_backup, buffer, sess, gamma, val_last, idx):
+    def train_batch(self, rnn_backup, buffer, masks, sess, gamma, val_last, idx):
         buffer = np.array(buffer)
-        self.agents[idx].train_batch(rnn_backup, buffer, sess, gamma, val_last)
+        masks = np.array(masks)
+        self.agents[idx].train_batch(rnn_backup, buffer, masks, sess, gamma, val_last)
 
     def run(self, sess, saver, max_episode_length):
         with sess.as_default():
@@ -131,6 +146,7 @@ class CardMaster:
             while global_episodes < 1001:
                 print("episode %d" % global_episodes)
                 episode_buffer = []
+                episode_mask = []
                 episode_values = []
                 episode_reward = 0
                 episode_steps = 0
@@ -151,30 +167,36 @@ class CardMaster:
 
                 for l in range(max_episode_length):
                     print("turn %d" % l)
-                    policy, val, rnn_state = sess.run([self.agents[train_id].network.policy_pred,
-                                                       self.agents[train_id].network.val_pred,
-                                                      self.agents[train_id].network.rnn_hidden_out],
-                                                      feed_dict={self.agents[train_id].network.input: s,
-                                                                 self.agents[train_id].network.rnn_hidden_in[0]: rnn_state[0],
-                                                                 self.agents[train_id].network.rnn_hidden_in[1]: rnn_state[1]
-                                                                 })
                     mask = self.env.get_mask()
                     oppo_cnt = self.env.get_opponent_min_cnt()
                     # encourage response when opponent is about to win
                     if random.random() > oppo_cnt / 20. and np.count_nonzero(mask) > 1:
                         mask[0] = False
+                    policy, val, rnn_state = sess.run([self.agents[train_id].network.valid_policy,
+                                                       self.agents[train_id].network.val_pred,
+                                                      self.agents[train_id].network.rnn_hidden_out],
+                                                      feed_dict={self.agents[train_id].network.input: s,
+                                                                 self.agents[train_id].network.mask: np.reshape(mask, [1, -1]),
+                                                                 self.agents[train_id].network.rnn_hidden_in[0]: rnn_state[0],
+                                                                 self.agents[train_id].network.rnn_hidden_in[1]: rnn_state[1]
+                                                                 })
+                    policy = policy[0]
                     valid_actions = np.take(np.arange(self.a_dim), mask.nonzero())
                     valid_actions = valid_actions.reshape(-1)
-                    valid_p = np.take(policy[0], mask.nonzero())
-                    valid_p = valid_p / np.sum(valid_p)
-                    valid_p = valid_p.reshape(-1)
-                    a = np.random.choice(valid_actions, p=valid_p)
+                    # valid_p = np.take(policy[0], mask.nonzero())
+                    # valid_p = valid_p / np.sum(valid_p)
+                    # valid_p = valid_p.reshape(-1)
+                    # print(policy.shape)
+                    # print(valid_actions.shape)
+                    a = np.random.choice(valid_actions, p=policy)
+                    a_masked = np.where(valid_actions == a)[0]
 
                     r, done = self.env.step(a)
                     s_prime = self.env.get_state()
                     s_prime = np.reshape(s_prime, [1, -1])
 
-                    episode_buffer.append([s, a, r, val[0]])
+                    episode_buffer.append([s, a_masked, r, val[0], np.sum(mask.astype(np.float32))])
+                    episode_mask.append(mask)
                     episode_values.append(val)
                     episode_reward += r
                     episode_steps += 1
@@ -182,7 +204,7 @@ class CardMaster:
                     if done:
                         print(np.sum(self.env.history))
                         if len(episode_buffer) != 0:
-                            self.train_batch(rnn_state_backup, episode_buffer, sess, self.gamma, 0, train_id)
+                            self.train_batch(rnn_state_backup, episode_buffer, episode_mask, sess, self.gamma, 0, train_id)
                         break
 
                     s = s_prime
@@ -193,8 +215,9 @@ class CardMaster:
                                                        self.agents[train_id].network.rnn_hidden_in[0]: rnn_state[0],
                                                        self.agents[train_id].network.rnn_hidden_in[1]: rnn_state[1]
                                                        })
-                        self.train_batch(rnn_state_backup, episode_buffer, sess, self.gamma, val_last[0], train_id)
+                        self.train_batch(rnn_state_backup, episode_buffer, episode_mask, sess, self.gamma, val_last[0], train_id)
                         episode_buffer = []
+                        episode_mask = []
 
                         rnn_state_backup = rnn_state
 
@@ -269,10 +292,33 @@ def run_game(sess, network):
     print("lord winning rate: %f" % (lord_win_rate / 100.0))
 
 if __name__ == '__main__':
+    # x = tf.placeholder(tf.float32, [3])
+    # m = tf.placeholder(tf.bool, [3])
+    #
+    # a = tf.placeholder(tf.int32, [None])
+    # a_onehot = tf.one_hot(a, 3, dtype=tf.float32)
+    # valid_x = tf.boolean_mask(x, m)
+    # valid_x = tf.nn.softmax(valid_x)
+    # y = tf.Variable([0., 0., 0.], trainable=False)
+    # y[1:3].assign(valid_x)
+    # grad = tf.gradients(y[1], x)
+    #
+    # with tf.Session() as sess:
+    #     mask = np.zeros([3])
+    #     mask[2] = 1
+    #     mask[1] = 1
+    #     mask = mask.astype(np.bool)
+    #     g, x = sess.run([grad, valid_x],
+    #                     feed_dict={x: np.ones([3]) * 2,
+    #                             m: mask})
+    #     # print(y)
+    #     print(g)
+    #     print(x)
+
     load_model = False
     model_path = './model'
     cardgame = Emulator()
-    with tf.device("/gpu:0"):
+    with tf.device("/cpu:0"):
         master = CardMaster(cardgame)
     saver = tf.train.Saver(max_to_keep=20)
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)) as sess:
@@ -285,4 +331,4 @@ if __name__ == '__main__':
         else:
             sess.run(tf.global_variables_initializer())
             master.run(sess, saver, 2000)
-        # sess.close()
+        sess.close()
