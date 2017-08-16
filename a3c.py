@@ -5,6 +5,8 @@ import numpy as np
 import tensorflow.contrib.slim as slim
 import tensorflow.contrib.rnn as rnn
 
+PASS_PENALTY = 5
+
 
 def update_params(scope_from, scope_to):
     vars_from = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope_from)
@@ -62,6 +64,7 @@ class CardNetwork:
 
             # only support batch size one since masked_a_dim is changing
             self.action = tf.placeholder(tf.int32, [None], "action_input")
+            self.policy_penalty = tf.placeholder(tf.float32, [None], "policy_penalty")
             self.masked_a_dim = tf.placeholder(tf.int32, None)
             self.action_one_hot = tf.one_hot(self.action, self.masked_a_dim, dtype=tf.float32)
 
@@ -69,11 +72,11 @@ class CardNetwork:
             self.advantages = tf.placeholder(tf.float32, [None], "advantage_input")
 
             self.pi_sample = tf.reduce_sum(self.action_one_hot * self.valid_policy, [1])
-            self.policy_loss = -tf.reduce_sum(tf.log(tf.clip_by_value(self.pi_sample, 1e-10, 1.)) * self.advantages)
+            self.policy_loss = -tf.reduce_sum(self.policy_penalty * tf.log(tf.clip_by_value(self.pi_sample, 1e-10, 1.)) * self.advantages)
 
             self.val_loss = tf.reduce_sum(tf.square(self.val_pred-self.val_truth))
 
-            self.loss = 0.2 * self.val_loss + self.policy_loss
+            self.loss = 0.4 * self.val_loss + self.policy_loss
 
             local_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
             self.gradients = tf.gradients(self.loss, local_vars)
@@ -96,6 +99,7 @@ class CardAgent:
         rewards = buffer[:, 2]
         values = buffer[:, 3]
         a_dims = buffer[0, 4]
+        policy_penalty = buffer[:, 5]
 
         rewards_plus = np.append(rewards, val_last)
         val_truth = discounted_return(rewards_plus, gamma)[:-1]
@@ -111,7 +115,8 @@ class CardAgent:
                                                       self.network.rnn_hidden_in[1]: rnn_backup[1],
                                                       self.network.action: actions,
                                                       self.network.masked_a_dim: a_dims,
-                                                      self.network.mask: masks})
+                                                      self.network.mask: masks,
+                                                      self.network.policy_penalty: policy_penalty})
 
 
 class CardMaster:
@@ -143,7 +148,7 @@ class CardMaster:
     def run(self, sess, saver, max_episode_length):
         with sess.as_default():
             global_episodes = sess.run(self.global_episodes)
-            while global_episodes < 1001:
+            while global_episodes < 10001:
                 print("episode %d" % global_episodes)
                 episode_buffer = []
                 episode_mask = []
@@ -195,7 +200,7 @@ class CardMaster:
                     s_prime = self.env.get_state()
                     s_prime = np.reshape(s_prime, [1, -1])
 
-                    episode_buffer.append([s, a_masked, r, val[0], np.sum(mask.astype(np.float32))])
+                    episode_buffer.append([s, a_masked, r, val[0], np.sum(mask.astype(np.float32)), PASS_PENALTY if a == 0 else 1])
                     episode_mask.append(mask)
                     episode_values.append(val)
                     episode_reward += r
@@ -318,7 +323,7 @@ if __name__ == '__main__':
     load_model = False
     model_path = './model'
     cardgame = Emulator()
-    with tf.device("/cpu:0"):
+    with tf.device("/gpu:0"):
         master = CardMaster(cardgame)
     saver = tf.train.Saver(max_to_keep=20)
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)) as sess:

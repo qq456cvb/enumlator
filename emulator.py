@@ -74,6 +74,13 @@ class Emulator:
             if self.templates_tiny[idx] is not None:
                 self.templates_tiny[idx] = cv2.cvtColor(self.templates_tiny[idx], cv2.COLOR_BGR2GRAY)
 
+        for i in range(len(self.templates)):
+            self.templates[i] = self.templates[i][::2, ::2]
+        for i in range(len(self.templates_mini)):
+            self.templates_mini[i] = self.templates_mini[i][::2, ::2]
+        for i in range(len(self.templates_tiny)):
+            self.templates_tiny[i] = self.templates_tiny[i][::2, ::2]
+
     # spin lock, pos: x, y
     def spin(self, pos, color, interval=0.1, max_wait=0.):
         wait = 0.
@@ -128,7 +135,7 @@ class Emulator:
         # print('intention:', end=' ')
         # print(intention)
         if not intention:
-            click(self.x + 600, self.y + 900)
+            click(self.x + 300, self.y + 450)
         else:
             self.history[2, :] += Card.to_onehot(intention)
             pos = []
@@ -151,14 +158,14 @@ class Emulator:
                     pos.append(self.click_pos[idx])
                 for p in pos:
                     click(p[0], p[1])
-            self.spin((1400, 900), [0, 170, 239])
-            click(self.x + 1400, self.y + 900)
+            self.spin((700, 450), [0, 170, 239])
+            click(self.x + 700, self.y + 450)
 
         # self.spin((1400, 900), [241, 235, 223], 0.03)
         time.sleep(0.3)
-        idx = self.spin_multiple([(1400, 900), (1800, 200)], [[88, 88, 88], [170, 170, 255]])
+        idx = self.spin_multiple([(700, 450), (900, 100)], [[88, 88, 88], [170, 170, 255]])
         if idx == 1:
-            if np.array_equal(self.get_window_img()[400, 1040, :], np.array([202, 202, 202])):
+            if np.array_equal(self.get_window_img()[200, 520, :], np.array([202, 202, 202])):
                 if self.id == 2:
                     return -LORD_REWARD, True
                 else:
@@ -192,26 +199,26 @@ class Emulator:
 
     def begin(self):
         self.reset()
-        self.spin((1000, 900), [240, 245, 199])
+        self.spin((500, 450), [240, 245, 199])
         # begin the game
-        click(self.x + 1000, self.y + 900)
+        click(self.x + 500, self.y + 450)
 
     def end(self):
         # click the summary window
-        self.spin((1800, 200), [170, 170, 255])
-        click(self.x + 1800, self.y + 200)
+        self.spin((900, 100), [170, 170, 255])
+        click(self.x + 900, self.y + 100)
 
-        self.spin_multiple([(1800, 300), (1400, 500)], [[170, 170, 255], [240, 211, 150]])
+        self.spin_multiple([(900, 150), (700, 250)], [[170, 170, 255], [240, 211, 150]])
         # 三连败界面，傻逼作者
-        if np.array_equal(self.get_window_img()[500, 1700, :], np.array([254, 231, 195])):
-            click(self.x + 1800, self.y + 300)
+        if np.array_equal(self.get_window_img()[250, 850, :], np.array([254, 231, 195])):
+            click(self.x + 900, self.y + 150)
 
     def parse_lord(self):
         self.cards_other[0] = ['u'] * 17
         self.cards_other[1] = self.cards_other[0].copy()
-        if np.array_equal(self.get_window_img()[820, 80, :], np.array([173, 173, 249])):
+        if np.array_equal(self.get_window_img()[410, 40, :], np.array([173, 173, 249])):
             self.id = 2
-        elif np.array_equal(self.get_window_img()[290, 80, :], np.array([60, 60, 242])):
+        elif np.array_equal(self.get_window_img()[145, 40, :], np.array([60, 60, 242])):
             self.id = 3
         else:
             self.id = 1
@@ -222,19 +229,19 @@ class Emulator:
 
     def prepare(self):
         # wait for shuffle
-        call = self.spin_multiple([(1150, 900), (1000, 680)], [[4, 188, 255], [255, 255, 255]])
+        call = self.spin_multiple([(575, 450), (500, 340)], [[4, 188, 255], [255, 255, 255]])
         should_choose = (call == 0)
 
         if should_choose:
             # I should choose
             if random.randint(1, 2) == 1:
                 # do not call for lord
-                while np.array_equal(self.get_window_img()[900, 800, :], np.array([142, 222, 249])):
-                    click(self.x + 800, self.y + 900)
+                while np.array_equal(self.get_window_img()[450, 400, :], np.array([142, 222, 249])):
+                    click(self.x + 400, self.y + 450)
             else:
                 # call for lord
-                click(self.x + 1200, self.y + 900)
-            called = self.spin((1000, 680), [255, 255, 255], 0.1, 0.5)
+                click(self.x + 600, self.y + 450)
+            called = self.spin((500, 340), [255, 255, 255], 0.1, 0.5)
             # no one calls for lord
             if not called:
                 print("no one calls")
@@ -244,7 +251,7 @@ class Emulator:
         else:
             self.extra_cards = self.parse_extra_cards(self.get_window_img())
 
-        self.spin((1400, 900), [88, 88, 88])
+        self.spin((700, 450), [88, 88, 88])
         self.parse_lord()
         next_cards = self.parse_next_cards(self.get_window_img())
         self.history[0, :] += Card.to_onehot(next_cards)
@@ -261,14 +268,14 @@ class Emulator:
     def parse_before_cards(self, img):
         cards = []
         method = eval('cv2.TM_CCOEFF_NORMED')
-        for y in [560, 760]:
-            x = 6
-            while x < 1000:
+        for y in [280, 380]:
+            x = 3
+            while x < 500:
                 # cv2.rectangle(img, (6, 550), (1000, 800), (255, 0, 0))
                 x += 1
                 if np.array_equal(img[y, x, :], np.array([255, 255, 255])):
                     _, _, _, rect = cv2.floodFill(img.copy(), None, (x, y), (255, 0, 0), (0, 0, 0), (0, 0, 0))
-                    sub_img_bgr = img[rect[1]:rect[1] + 48, rect[0]:rect[0] + rect[2]]
+                    sub_img_bgr = img[rect[1]:rect[1] + 24, rect[0]:rect[0] + rect[2]]
                     sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
 
                     max_response = 0.
@@ -302,14 +309,14 @@ class Emulator:
     def parse_next_cards(self, img):
         cards = []
         method = eval('cv2.TM_CCOEFF_NORMED')
-        for y in [560, 760]:
-            x = 1080
-            while x < 2100:
+        for y in [280, 380]:
+            x = 540
+            while x < 1050:
                 # cv2.rectangle(img, (6, 550), (1000, 800), (255, 0, 0))
                 x += 1
                 if np.array_equal(img[y, x, :], np.array([255, 255, 255])):
                     _, _, _, rect = cv2.floodFill(img.copy(), None, (x, y), (255, 0, 0), (0, 0, 0), (0, 0, 0))
-                    sub_img_bgr = img[rect[1]:rect[1] + 48, rect[0]:rect[0] + rect[2]]
+                    sub_img_bgr = img[rect[1]:rect[1] + 24, rect[0]:rect[0] + rect[2]]
                     sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
 
                     max_response = 0.
@@ -343,12 +350,13 @@ class Emulator:
     def parse_up_cards(self, img):
         cards = []
         method = eval('cv2.TM_CCOEFF_NORMED')
-        x = 10
-        while x < 1935:
+        x = 5
+        while x < 968:
             x += 1
-            if np.array_equal(img[989, x, :], np.array([255, 255, 255])):
-                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 989), (255, 0, 0), (0, 0, 0), (0, 0, 0))
-                sub_img_bgr = img[rect[1]:rect[1] + 75, rect[0]:rect[0] + rect[2]]
+            # 989
+            if np.array_equal(img[494, x, :], np.array([255, 255, 255])):
+                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 494), (255, 0, 0), (0, 0, 0), (0, 0, 0))
+                sub_img_bgr = img[rect[1]:rect[1] + 38, rect[0]:rect[0] + rect[2]]
                 sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
                 max_response = 0.
                 max_j = -1
@@ -375,12 +383,13 @@ class Emulator:
         cards = []
         self.click_pos = []
         method = eval('cv2.TM_CCOEFF_NORMED')
-        x = 10
-        while x < 1935:
+        x = 5
+        while x < 968:
             x += 1
-            if np.array_equal(img[1007, x, :], np.array([255, 255, 255])):
-                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 1007), (255, 0, 0), (0, 0, 0), (0, 0, 0))
-                sub_img_bgr = img[rect[1]:rect[1] + 75, rect[0]:rect[0] + rect[2]]
+            # 1007
+            if np.array_equal(img[503, x, :], np.array([255, 255, 255])):
+                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 503), (255, 0, 0), (0, 0, 0), (0, 0, 0))
+                sub_img_bgr = img[rect[1]:rect[1] + 38, rect[0]:rect[0] + rect[2]]
                 sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
                 # _, sub_img = cv2.threshold(sub_img, 127, 255, cv2.THRESH_BINARY)
                 # cv2.imwrite('haha.bmp', sub_img)
@@ -422,12 +431,12 @@ class Emulator:
     def parse_extra_cards(self, img):
         cards = []
         method = eval('cv2.TM_CCOEFF_NORMED')
-        x = 820
-        while x < 1140:
+        x = 410
+        while x < 570:
             x += 1
-            if np.array_equal(img[750, x, :], np.array([255, 255, 255])):
-                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 750), (255, 0, 0), (0, 0, 0), (0, 0, 0))
-                sub_img_bgr = img[rect[1]:rect[1] + 75, rect[0]:rect[0] + rect[2]]
+            if np.array_equal(img[375, x, :], np.array([255, 255, 255])):
+                _, _, _, rect = cv2.floodFill(img.copy(), None, (x, 375), (255, 0, 0), (0, 0, 0), (0, 0, 0))
+                sub_img_bgr = img[rect[1]:rect[1] + 38, rect[0]:rect[0] + rect[2]]
                 sub_img = cv2.cvtColor(sub_img_bgr, cv2.COLOR_BGR2GRAY)
                 # _, sub_img = cv2.threshold(sub_img, 127, 255, cv2.THRESH_BINARY)
                 # cv2.imwrite('haha.bmp', sub_img)
@@ -480,13 +489,21 @@ class Emulator:
         img = ImageGrab.grab(bbox=(self.x, self.y, self.x + self.w, self.y + self.h))
         frame = np.array(img)
         frame = frame[:, :, [2, 1, 0]]
+        # print(frame.shape)
         return frame
 
 
 if __name__ == '__main__':
 
     emulator = Emulator()
-    cv2.imwrite('test32.bmp', emulator.get_window_img())
+    # i = 1
+    # while cv2.imread('test%d.bmp' % i) is not None:
+    #     i += 1
+    # while True:
+    #     input('anything')
+    #     cv2.imwrite('test%d.bmp' % i, emulator.get_window_img())
+    #     i += 1
+    # cv2.imwrite('test32.bmp', emulator.get_window_img())
     # print(emulator.parse_up_cards(emulator.get_window_img()))
     for i in range(2):
         emulator.begin()
